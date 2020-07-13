@@ -1,0 +1,667 @@
+import { CreepBase } from "./CreepBase";
+import { Status } from "utils/Status";
+
+/**
+ * Memory:
+ *  status: "building" | "upgrading"
+ */
+
+export class CreepUpgrader extends CreepBase {
+  public run(): Status {
+    let stageName = "";
+
+    if (this.creep.memory.upgrading && this.creep.store.getUsedCapacity() == 0) {
+      this.creep.memory.upgrading = false;
+    }
+
+    if (!this.creep.memory.upgrading && this.creep.store.getFreeCapacity() == 0) {
+      this.creep.memory.upgrading = true;
+    }
+
+    // Step: Upgrade the controller
+    stageName = "Upgrading";
+    if (this.creep.memory.upgrading) {
+      const r = this.upgradeController();
+      if (+r != OK && +r != ERR_BUSY) {
+        console.log(`[ERROR] [${this.creep.name}] [${stageName}] ${r.message} (${r.value})`);
+      }
+      return r;
+    }
+
+    // Step: Get resources
+    stageName = "Collecting";
+    if (!this.creep.memory.upgrading) {
+      const r = this.takeResoures();
+      if (+r != OK) {
+        console.log(`[ERROR] [${this.creep.name}] [${stageName}] ${r.message} (${r.value})`);
+      }
+      return r;
+    }
+
+    return new Status(OK);
+  }
+
+
+  public upgradeController(): Status {
+    const target: StructureController = <StructureController>this.creep.pos.findClosestByPath(FIND_MY_STRUCTURES, {
+      filter: (struct): Boolean =>
+        struct.structureType == STRUCTURE_CONTROLLER
+    });
+
+    if (!target)
+      return new Status(ERR_NOT_FOUND);
+
+    const r = this.creep.upgradeController(target);
+    switch (r) {
+      case ERR_NOT_IN_RANGE:
+        this.creep.moveTo(target);
+      case OK:
+      case ERR_BUSY:
+        return new Status(OK);
+      default:
+        return new Status(r);
+    }
+  }
+}
+import { CreepBase } from "./CreepBase";
+import { Status } from "utils/Status";
+
+export class CreepBuilder extends CreepBase {
+  public run() {
+    let stageName: string;
+
+    if (this.creep.memory.building && this.creep.store.getUsedCapacity() == 0)
+      this.creep.memory.building = false;
+
+    if (!this.creep.memory.building && this.creep.store.getFreeCapacity() == 0)
+      this.creep.memory.building = true;
+
+    // Stage: Building
+    stageName = "Building";
+    if (this.creep.memory.building) {
+      const r = this.build();
+      if (+r != OK && +r != ERR_BUSY) {
+        console.log(`[ERROR] [${this.creep.name}] [${stageName}] ${r.message} (${r.value})`);
+      }
+      return r;
+    }
+
+    // Stage: Collecting
+    stageName = "Collecting";
+    if (!this.creep.memory.building) {
+      const r = this.takeResoures();
+      if (+r != OK && +r != ERR_BUSY) {
+        console.log(`[ERROR] [${this.creep.name}] [${stageName}] ${r.message} (${r.value})`);
+      }
+
+    }
+
+    return new Status(OK);
+  }
+
+
+  private build() {
+    const target = this.creep.pos.findClosestByPath(FIND_CONSTRUCTION_SITES);
+    if (!target)
+      return new Status(ERR_NOT_FOUND);
+
+    const r = this.creep.build(target);
+    switch (r) {
+      case ERR_NOT_IN_RANGE:
+        this.creep.moveTo(target);
+      case OK:
+        return new Status(OK);
+      default:
+        return new Status(r, `IDK WTF ${r}`);
+    }
+  }
+}
+import { CreepBase } from "./CreepBase";
+import { Status } from "utils/Status";
+
+export class CreepMiner extends CreepBase {
+	public run(): Status {
+		let stageName: string;
+		// Stage 1: Mining
+		stageName = "Mining";
+		if (this.creep.store.getFreeCapacity() > 0) {
+			const r: Status = this.mine();
+			if (+r == OK) {
+				return r;
+			}
+			if (+r != ERR_NOT_ENOUGH_RESOURCES && +r != ERR_NOT_FOUND) {
+				console.log(`[ERROR] [${this.creep.name}] ${r.message} (${r.message})`)
+				return r;
+			}
+			console.log(`[WARNING] ${this.creep.name}: ${r.message}`);
+			return r;
+		}
+
+		// Stage 2: Transport energy to containers or spawns
+		stageName = "Transporting"
+		if (this.creep.store.getFreeCapacity() == 0) {
+			const r: Status = this.transport();
+			if (+r == OK || +r == ERR_BUSY)
+				return r;
+
+			if (+r != ERR_NOT_FOUND)
+				console.log(`[ERROR] [${this.creep.name}] [${stageName}] ${r.message} (${r.value})`);
+			else
+				console.log(`[WARN] [${this.creep.name}] [${stageName}] ${r.message} (${r.value})`);
+
+		}
+		return new Status(OK);
+	}
+	private transport() {
+		let stageName: string;
+		// Stage 1: Tranfer to containers
+		stageName = "To Containers";
+		let r: Status = this.transferEnergyToContainer();
+
+		if (+r == OK || +r == ERR_BUSY)
+			return new Status(OK);
+
+		if (+r != ERR_NOT_FOUND) {
+			return new Status(+r, `${stageName} ${r.message}`);
+		}
+
+		// Stage 2: Transfer to spawn
+		stageName = "To Spawn";
+		r = this.transferEnergyToSpawn();
+
+		if (+r == OK)
+			return r;
+
+		if (+r != ERR_NOT_FOUND || +r != ERR_BUSY) {
+			return new Status(+r, `[${stageName}] ${r.message}`);
+		}
+
+		// Stage 3: Waiting for free space
+		return r;
+
+	}
+
+}
+import { Status } from "utils/Status";
+
+export class CreepBase {
+	protected creep: Creep;
+
+	constructor(creep: Creep) {
+		this.creep = creep;
+	}
+
+	protected mine(): Status {
+		const target: Source | null = this.creep.pos.findClosestByPath(FIND_SOURCES);
+
+		if (!target)
+			return new Status(ERR_NOT_FOUND, "No active sources found in the room");
+
+		let r: number;
+		switch (r = this.creep.harvest(target)) {
+			case ERR_NOT_IN_RANGE:
+				this.creep.moveTo(target);
+			case ERR_BUSY:
+			case OK:
+				return new Status(OK);
+			case ERR_NOT_ENOUGH_RESOURCES:
+				return new Status(r, "Source is empty");
+			case ERR_NO_BODYPART:
+				return new Status(r, "No WORK bodypart, are you crazy, man?");
+			default:
+				return new Status(r, `${+r}, IDK WTF`);
+		}
+	}
+
+	/**
+	 * High-Level Commands
+	 */
+
+	protected takeResoures() {
+		let stageName = "";
+		// Stage 1: From containers
+		stageName = "Containers";
+		let r: Status = this.takeEnergyFromContainer();
+		if (+r == OK || +r == ERR_BUSY)
+			return new Status(OK);
+		if (+r != ERR_NOT_FOUND && +r != ERR_NOT_ENOUGH_ENERGY)
+			return new Status(+r, `[${stageName}] ` + r.message);
+
+		// Stage 2: Mine it!
+		stageName = "Mining";
+		r = this.mine();
+		if (+r == OK || +r == ERR_BUSY)
+			return new Status(OK);
+		if (+r != ERR_NOT_FOUND && +r != ERR_NOT_ENOUGH_ENERGY)
+			return new Status(+r, `[${stageName}] ` + r.message);
+
+		// Wait for resources
+		console.log(`[INFO] [${this.creep.name}] [${stageName}]: Waiting for source`);
+		return new Status(OK);
+	}
+
+	/**
+	 * SPAWN AND ITS EXTENSION INTERACTIONS
+	 */
+	protected transferEnergyToSpawn(): Status {
+		const targets = <StructureSpawn[] | StructureExtension[]>this.creep.room.find(
+			FIND_MY_STRUCTURES, {
+			filter: (struct: StructureSpawn | StructureExtension): Boolean =>
+				(struct.structureType == STRUCTURE_SPAWN ||
+					struct.structureType == STRUCTURE_EXTENSION) &&
+				struct.store.getFreeCapacity &&
+				struct.store.getFreeCapacity(RESOURCE_ENERGY) > 0
+		}
+		);
+		targets.sort((
+			a: StructureSpawn | StructureExtension,
+			b: StructureSpawn | StructureExtension
+		) => b.store.getFreeCapacity(RESOURCE_ENERGY) - a.store.getFreeCapacity(RESOURCE_ENERGY));
+
+		if (targets.length == 0) {
+			return new Status(ERR_NOT_FOUND, "Spawn is full or doesn't exists");
+		}
+
+		const r = this.creep.transfer(targets[0], RESOURCE_ENERGY);
+		switch (+r) {
+			case ERR_NOT_IN_RANGE:
+				this.creep.moveTo(targets[0]);
+			case ERR_BUSY:
+			case OK:
+				return new Status(OK);
+			default:
+				return new Status(+r, `${+r}, IDK WTF`);
+		}
+	}
+
+	/**
+	 * CONTAINER INTERACTIONS
+	 */
+	protected takeEnergyFromContainer(): Status {
+		const targets = <StructureContainer[]>this.creep.room.find(
+			FIND_STRUCTURES,
+			{
+				filter: (struct: StructureContainer): Boolean =>
+					struct.structureType == STRUCTURE_CONTAINER &&
+					struct.store.getUsedCapacity(RESOURCE_ENERGY) > this.creep.store.getFreeCapacity(RESOURCE_ENERGY)
+			}
+		);
+
+		if (targets.length == 0) {
+			return new Status(ERR_NOT_FOUND, "No container with enough energy found");
+		}
+
+		let target: StructureContainer = targets[0];
+		for (const struct of targets)
+			if (this.creep.pos.findPathTo(struct).length < this.creep.pos.findPathTo(target).length)
+				target = struct;
+
+		let r: number;
+		switch (r = this.creep.withdraw(target, RESOURCE_ENERGY)) {
+			case ERR_NOT_IN_RANGE:
+				this.creep.moveTo(target);
+			case OK:
+			case ERR_BUSY:
+				return new Status(OK);
+			case ERR_NOT_ENOUGH_RESOURCES:
+				return new Status(r, "Not enough energy in container");
+			default:
+				return new Status(r, `IDK WTF: ${+r}`);
+		}
+	}
+
+	public transferEnergyToContainer(): Status {
+		const target = <StructureContainer>this.creep.pos.findClosestByPath(
+			FIND_STRUCTURES,
+			{
+				filter: (struct: StructureContainer): Boolean =>
+					(struct.structureType == STRUCTURE_CONTAINER || struct.structureType == STRUCTURE_SPAWN) &&
+					struct.store.getFreeCapacity(RESOURCE_ENERGY) > 0
+			}
+		)
+
+		if (!target) {
+			return new Status(ERR_NOT_FOUND, "All containers are full or doesn't exist");
+		}
+
+		let r = this.creep.transfer(target, RESOURCE_ENERGY);
+		switch (r) {
+			case ERR_NOT_IN_RANGE:
+				this.creep.moveTo(target);
+			case OK:
+			case ERR_BUSY:
+				return new Status(OK);
+			default:
+				return new Status(r, `IDK WTF: ${+r}`);
+		}
+	}
+}
+
+
+function getNotEmptyContainers(room: Room) {
+  const containers = <StructureContainer[]>room.find(FIND_STRUCTURES, {
+    filter: (struct: Structure): Boolean =>
+      struct.structureType == STRUCTURE_CONTAINER
+  });
+
+  containers.sort((a, b) => a.store.getUsedCapacity() - b.store.getUsedCapacity());
+  return containers;
+}
+
+export {
+  getNotEmptyContainers
+}
+export class Status {
+	public value: number;
+	public message: String = "";
+
+	public valueOf = (): number => { return this.value };
+
+	constructor(value: number, message: String = "") {
+		this.value = value;
+		this.message = message;
+	}
+}
+import { RoleInfo } from "./RoleInfo";
+
+export interface RoleList {
+  [key: string]: RoleInfo
+};
+export interface RoleConfig {
+  work?: number,
+  move?: number,
+  carry?: number,
+  attack?: number,
+  ranged_attack?: number,
+  tough?: number,
+  heal?: number,
+  claim?: number
+}
+import { CreepBase } from "controllers/creeps/CreepBase";
+import { RoleConfig } from "./RoleConfig";
+export interface RoleInfo {
+  class: any;
+  count: number;
+  name: string;
+  config: RoleConfig;
+}
+import { CreepMiner } from "controllers/creeps/CreepMiner";
+import { CreepUpgrader } from "controllers/creeps/CreepUpgrader";
+import { RoleInfo } from "utils/config/RoleInfo";
+import { RoleConfig } from "utils/config/RoleConfig";
+import { RoleList } from "utils/config/RoleList";
+import { CreepBuilder } from "controllers/creeps/CreepBuilder";
+
+const miner: RoleInfo = {
+  class: CreepMiner,
+  name: "miner",
+  count: 1,
+  config: {
+    work: 1,
+    carry: 1,
+    move: 1
+  }
+}
+
+const upgrader: RoleInfo = {
+  class: CreepUpgrader,
+  name: "upgrader",
+  count: 1,
+  config: {
+    work: 1,
+    carry: 1,
+    move: 1
+  }
+}
+
+const builder: RoleInfo = {
+  class: CreepBuilder,
+  name: "builder",
+  count: 2,
+  config: {
+    work: 1,
+    carry: 1,
+    move: 1
+  }
+}
+
+const roleList: RoleList = {
+  "miner": miner,
+  "upgrader": upgrader,
+  "builder": builder
+}
+
+export const cfg = {
+  "roles": roleList
+}
+// tslint:disable:no-conditional-assignment
+import { SourceMapConsumer } from "source-map";
+
+export class ErrorController {
+	// Cache consumer
+	private static _consumer?: SourceMapConsumer;
+
+	public static get consumer(): SourceMapConsumer {
+		if (this._consumer == null) {
+			this._consumer = new SourceMapConsumer(require("main.js.map"));
+		}
+
+		return this._consumer;
+	}
+
+	// Cache previously mapped traces to improve performance
+	public static cache: { [key: string]: string } = {};
+
+	/**
+	 * Generates a stack trace using a source map generate original symbol names.
+	 *
+	 * WARNING - EXTREMELY high CPU cost for first call after reset - >30 CPU! Use sparingly!
+	 * (Consecutive calls after a reset are more reasonable, ~0.1 CPU/ea)
+	 *
+	 * @param {Error | string} error The error or original stack trace
+	 * @returns {string} The source-mapped stack trace
+	 */
+	public static sourceMappedStackTrace(error: Error | string): string {
+		const stack: string = error instanceof Error ? (error.stack as string) : error;
+		if (this.cache.hasOwnProperty(stack)) {
+			return this.cache[stack];
+		}
+
+		const re = /^\s+at\s+(.+?\s+)?\(?([0-z._\-\\\/]+):(\d+):(\d+)\)?$/gm;
+		let match: RegExpExecArray | null;
+		let outStack = error.toString();
+
+		while ((match = re.exec(stack))) {
+			if (match[2] === "main") {
+				const pos = this.consumer.originalPositionFor({
+					column: parseInt(match[4], 10),
+					line: parseInt(match[3], 10)
+				});
+
+				if (pos.line != null) {
+					if (pos.name) {
+						outStack += `\n    at ${pos.name} (${pos.source}:${pos.line}:${pos.column})`;
+					} else {
+						if (match[1]) {
+							// no original source file name known - use file name from given trace
+							outStack += `\n    at ${match[1]} (${pos.source}:${pos.line}:${pos.column})`;
+						} else {
+							// no original source file name known or in given trace - omit name
+							outStack += `\n    at ${pos.source}:${pos.line}:${pos.column}`;
+						}
+					}
+				} else {
+					// no known position
+					break;
+				}
+			} else {
+				// no more parseable lines
+				break;
+			}
+		}
+
+		this.cache[stack] = outStack;
+		return outStack;
+	}
+
+	public static wrapLoop(loop: () => void): () => void {
+		return () => {
+			try {
+				loop();
+			} catch (e) {
+				if (e instanceof Error) {
+					if ("sim" in Game.rooms) {
+						const message = `Source maps don't work in the simulator - displaying original error`;
+						console.log(`<span style='color:red'>${message}<br>${_.escape(e.stack)}</span>`);
+					} else {
+						console.log(`<span style='color:red'>${_.escape(this.sourceMappedStackTrace(e))}</span>`);
+					}
+				} else {
+					// can't handle it
+					throw e;
+				}
+			}
+		};
+	}
+}
+import { cfg } from "../config";
+import { RoleInfo } from "../utils/config/RoleInfo";
+import { Status } from "../utils/Status";
+import { RoleConfig } from "utils/config/RoleConfig";
+
+function renewCreeps() {
+  for (const role of Object.values(cfg.roles)) {
+    const creeps = _.filter(Game.creeps, (creep: Creep) =>
+      creep.memory.role == role.name);
+
+    if (creeps.length < role.count) {
+      const r = spawnCreep(role);
+      if (+r != OK && +r != ERR_BUSY) {
+        console.log(`[ERROR] [CreepController] [${role.name}] ${r.message} (${r.value}})`);
+      }
+      return r;
+    }
+  }
+  return new Status(OK);
+}
+
+function assignRoles() {
+  for (const [name, creep] of Object.entries(Game.creeps)) {
+    const roleName: string = creep.memory.role;
+    const Role = cfg.roles[roleName].class;
+    const controller = new Role(creep);
+    controller.run();
+  }
+}
+
+function getBodyparts(config: RoleConfig): BodyPartConstant[] {
+  let bodyParts: BodyPartConstant[] = [];
+  for (const [key, value] of Object.entries(config)) {
+    const part: BodyPartConstant = eval(key.toUpperCase());
+
+    let parts: BodyPartConstant[] = [];
+    parts.length = value;
+    parts = parts.fill(part, 0, value);
+
+    bodyParts = bodyParts.concat(parts);
+  }
+  return bodyParts;
+}
+
+function prepareCreepCounter(role: string): void {
+  if (!Memory.counters)
+    Memory.counters = {};
+  if (!Memory.counters[role])
+    Memory.counters[role] = 0;
+}
+
+function spawnCreep(role: RoleInfo): Status {
+  prepareCreepCounter(role.name);
+  let name = role.name.toUpperCase() + "-" + Memory.counters[role.name] % 1000;
+  const bodyParts = getBodyparts(role.config)
+
+  const res = Object.values(Game.spawns)[0].spawnCreep(bodyParts, name, {
+    memory: {
+      role: role.name
+    }
+  });
+
+  switch (res) {
+    case OK:
+      break;
+    case ERR_BUSY:
+      return new Status(res, "Spawn is busy");
+    case ERR_NAME_EXISTS:
+      return new Status(res, "Creep with the same name already exists!");
+    case ERR_NOT_ENOUGH_ENERGY:
+      return new Status(res, `Not Enough Energy for spawning a ${role.name}`);
+    case ERR_RCL_NOT_ENOUGH:
+      return new Status(res, "Room Controller Level is low for this spawn");
+  }
+
+  console.log(`[INFO] [CreepManager] ${role.name.toUpperCase()} designated ${name} has been SPAWNED`);
+  Memory.counters[role.name]++;
+
+  return new Status(OK);
+}
+
+export {
+  renewCreeps,
+  assignRoles
+}
+function collectGarbage(): void {
+	for (const name in Memory.creeps)
+		if (!(name in Game.creeps))
+			delete Memory.creeps[name];
+}
+
+export {
+	collectGarbage
+}
+// example declaration file - remove these and add your own custom typings
+
+// memory extension samples
+interface CreepMemory {
+	role: string;
+	// For builder
+	building?: boolean;
+	// For upgrader
+	upgrading?: boolean;
+}
+
+interface Memory {
+	uuid: number;
+	log: any;
+	counters: any;
+}
+
+
+// `global` extension samples
+declare namespace NodeJS {
+	interface Global {
+		log: any;
+		WORK: WORK;
+		MOVE: MOVE;
+		CARRY: CARRY;
+
+
+	}
+}
+import { ErrorController } from "managers/ErrorManager";
+import { collectGarbage } from "managers/GarbageManager";
+import { CreepMiner } from "controllers/creeps/CreepMiner";
+import { CreepUpgrader } from "controllers/creeps/CreepUpgrader";
+import { renewCreeps, assignRoles } from "managers/CreepManager";
+
+// When compiling TS to JS and bundling with rollup, the line numbers and file names in error messages change
+// This utility uses source maps to get the line numbers and file names of the original, TS source code
+export const loop = ErrorController.wrapLoop(() => {
+	console.log(`Current game tick is ${Game.time}`);
+
+	// Automatically delete memory of missing creeps
+	collectGarbage();
+
+	renewCreeps();
+	assignRoles();
+
+});
